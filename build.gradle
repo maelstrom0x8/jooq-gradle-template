@@ -1,0 +1,149 @@
+import nu.studer.gradle.jooq.JooqEdition
+import org.testcontainers.containers.PostgreSQLContainer
+
+buildscript {
+
+    repositories {
+        mavenLocal()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath 'org.testcontainers:postgresql:1.17.3'
+        classpath 'org.postgresql:postgresql:42.6.0'
+    }
+
+}
+
+group = 'org.aeros'
+version = '0.0.1-SNAPSHOT'
+sourceCompatibility = '17'
+
+repositories {
+	mavenCentral()
+}
+
+configurations {
+	flywayMigration
+	compileOnly {
+		extendsFrom annotationProcessor
+	}
+}
+
+def jooqVersion = '3.18.4'
+
+ext {
+	set('testcontainersVersion', "1.18.1")
+	set('jooq.version', jooqVersion)
+}
+
+
+
+dependencies {
+
+	implementation 'org.springframework.boot:spring-boot-starter-jooq'
+	implementation 'ch.qos.logback:logback-classic'
+	implementation 'org.flywaydb:flyway-core'
+
+	runtimeOnly 'org.postgresql:postgresql'
+
+	testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+	testImplementation 'org.testcontainers:junit-jupiter'
+	testImplementation 'org.assertj:assertj-core:3.11.1'
+	testImplementation 'org.testcontainers:postgresql'
+	testImplementation ('org.springframework.boot:spring-boot-starter-test') {
+		exclude group: 'org.junit.vintage', module: 'junit-vintage-engine'
+	}
+
+	flywayMigration 'org.postgresql:postgresql:42.5.1'
+	jooqGenerator 'org.postgresql:postgresql:42.5.1'
+	jooqGenerator 'org.testcontainers:postgresql:1.18.1'
+
+}
+
+dependencyManagement {
+	imports {
+		mavenBom "org.testcontainers:testcontainers-bom:${testcontainersVersion}"
+	}
+}
+
+
+test {
+	useJUnitPlatform()
+}
+
+tasks.register('postgresContainer') {
+	var instance = new PostgreSQLContainer<>("postgres:15.2-alpine")
+			.withDatabaseName("db")
+			.withUsername("postgres")
+			.withPassword("postgres")
+	instance.start()
+	postgresContainer.ext.jdbcUrl = instance.getJdbcUrl()
+	postgresContainer.ext.username = instance.getUsername()
+	postgresContainer.ext.password = instance.getPassword()
+	postgresContainer.ext.databaseName = instance.getDatabaseName()
+	postgresContainer.ext.instance = instance
+}
+
+flyway {
+	configurations = ['flywayMigration']
+	url = postgresContainer.jdbcUrl
+	user = postgresContainer.username
+	password = postgresContainer.password
+}
+
+jooq {
+	version = '3.18.4'
+	edition = JooqEdition.OSS
+
+	configurations {
+		main {
+			generateSchemaSourceOnCompilation = true
+
+			generationTool {
+				logging = org.jooq.meta.jaxb.Logging.WARN
+				jdbc {
+					driver = 'org.postgresql.Driver'
+					url = postgresContainer.jdbcUrl
+					user = postgresContainer.username
+					password = postgresContainer.password
+				}
+				generator {
+					name = 'org.jooq.codegen.JavaGenerator'
+					database {
+						name = 'org.jooq.meta.postgres.PostgresDatabase'
+						inputSchema = 'public'
+						includes = '.*'
+						excludes = 'flyway_schema_history'
+					}
+					generate {
+						deprecated = false
+						records = true
+						immutablePojos = true
+						fluentSetters = true
+					}
+					target {
+						packageName = 'org.aeros.demo.jooq'
+						directory = 'src/main/jooq'
+					}
+				}
+			}
+		}
+	}
+}
+
+tasks.named('generateJooq').configure {
+	
+	dependsOn tasks.named('postgresContainer')
+	dependsOn tasks.named('flywayMigrate')
+
+	inputs.files(fileTree('src/main/resources/db/migration'))
+			.withPropertyName('migrations')
+			.withPathSensitivity(PathSensitivity.RELATIVE)
+
+	allInputsDeclared = true
+
+	doLast {
+		postgresContainer.instance.stop()
+	}
+}
